@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-nas-s3-config
+  namespace: dp03
+  labels:
+    app: kafka-nas-s3-transfer
+    team: dp03
+data:
+  config.json: |
+    {
+      "kafka": {
+        "bootstrap_servers": "ckf-fsc-glb-prd.us.dell.com:9093",
+        "user_name": "{{kv/data/prod/commons/kafka_username}}",
+        "secret_key": "{{kv/data/prod/commons/kafka_password}}",
+        "msg_key": "nas-watcher",
+        "topic_name": "",
+        "topic_names": {
+          "Costed\\EE": "GSCM.PROC.SDSCAIDENTIA.SUBTIERBOM.COSTED.DOWNSTREAM.GE1",
+          "Costed\\ME": "GSCM.PROC.SDSCAIDENTIA.SUBTIERBOM.COSTED.DOWNSTREAM.GE1",
+          "UnCosted\\EE": "GSCM.PROC.SDSCAIDENTIA.SUBTIERBOM.UNCOSTED.DOWNSTREAM.GE1",
+          "UnCosted\\ME": "GSCM.PROC.SDSCAIDENTIA.SUBTIERBOM.UNCOSTED.DOWNSTREAM.GE1"
+        }
+      },
+      "s3": {
+        "bucket_name": "SDS",
+        "s3_object": "s3://",
+        "end_point": "https://cloudstorage.onefs.dell.com/",
+        "access_key": "{{kv/data/prod/dp3/ecs/ecs_access_key_id}}",
+        "secret_key": "{{kv/data/prod/dp3/ecs/ecs_secret_key}}",
+        "folder_name": "dp03",
+        "region": "us-east-1"
+      },
+      "vault": {
+        "vault_addr": "https://vault.dell.com/"
+      },
+      "primaryRedis": {
+        "hostname": "10.133.130.125",
+        "port": 6379,
+        "password": "",
+        "keep_alive_time": 5
+      },
+      "secondaryRedis": {
+        "hostname": "10.133.130.125",
+        "port": 6379,
+        "password": "",
+        "keep_alive_time": 5
+      },
+      "singleStore": {
+        "hostname": "scpmempcl2.us.dell.com",
+        "username": "{{kv/data/prod/dp3/singlestore/single_store_user_name}}",
+        "password": "{{kv/data/prod/dp3/singlestore/single_store_password}}",
+        "database": "ODM_FILES"
+      },
+      "logging": {
+        "url": "https://logger-api.scmdp.kob.dell.com/logging-api/v2/centralLogger",
+        "dp_name": "DP03_Production",
+        "app_id": "1007201",
+        "pod_name": "DP03_Production_Kafka_NAS_S3",
+        "platform": "KOB",
+        "domain": "MAKE",
+        "sub_domain": "MAKE"
+      },
+      "watchdog": [
+        {
+          "watch_patterns": "'.txt','.zip','.csv','.xlsx','.json'",
+          "watch_location": "/data/pvc/ODMFiles_Output",
+          "nas_path": "\\\\amerprpperep02.onefs.dell.com\\PPE_1007200pr02MP\\",
+          "source_system": "FSJ",
+          "files_to_ignore": "Thumbs.db",
+          "load_types": {
+            "Costed\\EE": "full",
+            "Costed\\ME": "incremental",
+            "UnCosted\\EE": "full",
+            "UnCosted\\ME": "full"
+          },
+          "multiple_topics_enabled": true,
+          "redis_cache_enabled": true,
+          "folder_to_listen": [
+            "Costed\\EE",
+            "Costed\\ME",
+            "UnCosted\\EE",
+            "UnCosted\\ME"
+          ]
+        }
+      ]
+    }
