@@ -1,7 +1,11 @@
 # Kafka NAS to S3 Transfer Service Dependencies
 
 # Internal Dell library (install from internal PyPI)
-scm_utilities
+--index-url https://artifacts.dell.com/artifactory/api/pypi/python/simple  
+
+urllib3==2.6.2 
+
+https://artifacts.dell.com:443/artifactory/scmdpl-1007201-pypi-prd-local/scm-utilities/0.3.0/scm_utilities-0.3.0-py3-none-any.whl
 
 # Kafka
 kafka-python==2.0.2
