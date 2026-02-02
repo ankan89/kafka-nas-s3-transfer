@@ -1,9 +1,9 @@
 {
   "kafka": {
-    "bootstrap_servers": "ckf-fsc-glb-prd.us.dell.com:9093",
-    "user_name": "{{kv/data/prod/commons/kafka_username}}",
-    "secret_key": "{{kv/data/prod/commons/kafka_password}}",
-    "msg_key": "nas-watcher",
+    "bootstrap_servers": "ckf-gscm-glb-np2-np1.us.dell.com:9093",
+    "user_name": "{{kv/data/dev/common/dp01_kafka_username}}",
+    "secret_key": "{{kv/data/dev/common/dp01_kafka_password}}",
+    "msg_key": "nas-file-copier",
     "topic_name": "",
     "topic_names": {
       "Costed\\EE": "GSCM.PROC.SDSCAIDENTIA.SUBTIERBOM.COSTED.DOWNSTREAM.GE1",
@@ -13,65 +13,94 @@
     }
   },
   "s3": {
-    "bucket_name": "SDS",
+    "bucket_name": "scm-plm-stg-bkt",
     "s3_object": "s3://",
-    "end_point": "https://cloudstorage.onefs.dell.com/",
-    "access_key": "{{kv/data/prod/dp3/ecs/ecs_access_key_id}}",
-    "secret_key": "{{kv/data/prod/dp3/ecs/ecs_secret_key}}",
-    "folder_name": "dp03",
+    "end_point": "https://ddobs-ex5000-c1-pc1np.dell.com/",
+    "access_key": "{{kv/data/dev/common/dp01_ecs_access_key_id}}",
+    "secret_key": "{{kv/data/dev/common/dp01_ecs_secret_key}}",
+    "folder_name": "EngineeringAndDesign",
     "region": "us-east-1"
   },
   "vault": {
-    "vault_addr": "https://vault.dell.com/"
-  },
-  "primaryRedis": {
-    "hostname": "10.133.130.125",
-    "port": 6379,
-    "password": "",
-    "keep_alive_time": 5
-  },
-  "secondaryRedis": {
-    "hostname": "10.133.130.125",
-    "port": 6379,
-    "password": "",
-    "keep_alive_time": 5
+    "vault_addr": "https://hcvault-nonprod.dell.com",
+    "role_id": "",
+    "secret_id": "",
+    "ns": ""
   },
   "singleStore": {
-    "hostname": "scpmempcl2.us.dell.com",
-    "username": "{{kv/data/prod/dp3/singlestore/single_store_user_name}}",
-    "password": "{{kv/data/prod/dp3/singlestore/single_store_password}}",
-    "database": "ODM_FILES"
+    "hostname": "scmnlmep1si1201.amer.dell.com",
+    "username": "{{kv/data/dev/common/singlestore_user}}",
+    "password": "{{kv/data/dev/common/singlestore_password}}",
+    "database": "NAS_File_Tracker"
   },
   "logging": {
     "url": "https://logger-api.scmdp.kob.dell.com/logging-api/v2/centralLogger",
-    "dp_name": "DP03_Production",
+    "dp_name": "DP01_Engineering&Design",
     "app_id": "1007201",
-    "pod_name": "DP03_Production_Kafka_NAS_S3",
+    "pod_name": "DP01_Engineering&Design_Kafka_NAS_S3",
     "platform": "KOB",
-    "domain": "MAKE",
-    "sub_domain": "MAKE"
+    "domain": "Engineering&Design",
+    "sub_domain": "SDS"
   },
   "watchdog": [
     {
       "watch_patterns": "'.txt','.zip','.csv','.xlsx','.json'",
-      "watch_location": "/data/pvc/ODMFiles_Output",
       "nas_path": "\\\\amerprpperep02.onefs.dell.com\\PPE_1007200pr02MP\\",
-      "source_system": "FSJ",
+      "source_system": "Engineering&Design",
       "files_to_ignore": "Thumbs.db",
-      "load_types": {
-        "Costed\\EE": "full",
-        "Costed\\ME": "incremental",
-        "UnCosted\\EE": "full",
-        "UnCosted\\ME": "full"
-      },
-      "multiple_topics_enabled": true,
-      "redis_cache_enabled": true,
-      "folder_to_listen": [
-        "Costed\\EE",
-        "Costed\\ME",
-        "UnCosted\\EE",
-        "UnCosted\\ME"
-      ]
+      "multiple_topics_enabled": true
     }
-  ]
+  ],
+  "kafka_msg_schema": {
+    "fields": [
+      {
+        "name": "MESSAGE_ID",
+        "type": "string"
+      },
+      {
+        "name": "EVENT_TYPE",
+        "type": "string"
+      },
+      {
+        "name": "ST_BOM_TYPE",
+        "type": "string"
+      },
+      {
+        "name": "IS_COSTED",
+        "type": "string"
+      },
+      {
+        "name": "IS_CLEANSHEET_REQUIRED",
+        "type": "string"
+      },
+      {
+        "name": "OLP_PHASE",
+        "type": "string"
+      },
+      {
+        "name": "ST_BOM_DOC_PATH",
+        "type": "string"
+      },
+      {
+        "name": "ST_BOM_FILE_NAME",
+        "type": "string"
+      },
+      {
+        "name": "ST_BOM_DOC_THUMNAIL",
+        "type": "string"
+      },
+      {
+        "name": "ST_BOM_DOC_CAD",
+        "type": "string"
+      },
+      {
+        "name": "ST_BOM_DOC_SUPPORTING_DOCS",
+        "type": "string"
+      },
+      {
+        "name": "EVENT_TIMESTAMP",
+        "type": "string"
+      }
+    ]
+  }
 }

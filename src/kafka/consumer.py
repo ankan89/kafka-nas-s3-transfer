@@ -135,7 +135,7 @@ class KafkaMessageConsumer:
     def consume_and_process(
         self,
         topics: List[str],
-        handler: Callable[[Dict[str, Any]], bool],
+        handler: Callable[[Dict[str, Any], str], bool],
         poll_timeout_ms: int = 1000
     ):
         """
@@ -144,7 +144,7 @@ class KafkaMessageConsumer:
 
         Args:
             topics: List of topics to consume from
-            handler: Function that processes message and returns success status
+            handler: Function that processes message and topic, returns success status
             poll_timeout_ms: Timeout for polling messages
         """
         if not self._consumer:
@@ -155,7 +155,7 @@ class KafkaMessageConsumer:
         self._running = True
 
         self._logger.log_info(
-            message="Starting message consumption loop",
+            message="Starting message consumption loop - waiting for Kafka messages",
             status=Status.Running,
             source="Kafka"
         )
@@ -166,6 +166,8 @@ class KafkaMessageConsumer:
                 message_batch = self._consumer.poll(timeout_ms=poll_timeout_ms)
 
                 for topic_partition, messages in message_batch.items():
+                    kafka_topic = topic_partition.topic  # Get the topic name
+
                     for message in messages:
                         message_id = None
                         try:
@@ -174,14 +176,14 @@ class KafkaMessageConsumer:
                             message_id = message_value.get("MESSAGE_ID", "unknown")
 
                             self._logger.log_info(
-                                message=f"Processing message: {message_id}",
+                                message=f"Received Kafka message: {message_id} from topic: {kafka_topic}",
                                 status=Status.Running,
                                 correlation_id=message_id,
                                 source="Kafka"
                             )
 
-                            # Process the message
-                            success = handler(message_value)
+                            # Process the message with topic name
+                            success = handler(message_value, kafka_topic)
 
                             if success:
                                 # Commit offset only on success

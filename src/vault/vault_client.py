@@ -1,6 +1,6 @@
 """
 HashiCorp Vault client for retrieving secrets.
-Supports Kubernetes authentication for KOB deployment.
+Supports AppRole authentication for local and KOB deployment.
 """
 
 import os
@@ -10,8 +10,148 @@ from typing import Optional, Dict, Any
 from functools import lru_cache
 
 
+def get_vault_creds():
+    """
+    Get Vault credentials from Kubernetes environment.
+    Returns role_id, secret_id, and namespace.
+    """
+    role_id = os.getenv("VAULT_ROLE_ID")
+    secret_id = os.getenv("VAULT_SECRET_ID")
+    ns = os.getenv("VAULT_NAMESPACE")
+    return role_id, secret_id, ns
+
+
+def add_secrets_from_vault(config: Dict[str, Any], vault_addr: str,
+                           role_id: str, secret_id: str, ns: str) -> Dict[str, Any]:
+    """
+    Resolve Vault placeholders in configuration using AppRole auth.
+
+    Args:
+        config: Configuration dictionary with potential placeholders
+        vault_addr: Vault server address
+        role_id: AppRole role ID
+        secret_id: AppRole secret ID
+        ns: Vault namespace
+
+    Returns:
+        Configuration with resolved secrets
+    """
+    client = hvac.Client(url=vault_addr, namespace=ns)
+
+    # Authenticate using AppRole
+    client.auth.approle.login(role_id=role_id, secret_id=secret_id)
+
+    if not client.is_authenticated():
+        raise Exception("Failed to authenticate with Vault")
+
+    # Resolve all placeholders
+    resolved_config = _resolve_placeholders(config, client)
+
+    return resolved_config
+
+
+def _resolve_placeholders(config: Any, client: hvac.Client) -> Any:
+    """
+    Recursively resolve Vault placeholders in configuration.
+
+    Placeholders format: {{kv/data/path/to/secret}}
+    """
+    placeholder_pattern = re.compile(r'\{\{(kv/data/[^}]+)\}\}')
+
+    if isinstance(config, dict):
+        return {k: _resolve_placeholders(v, client) for k, v in config.items()}
+    elif isinstance(config, list):
+        return [_resolve_placeholders(item, client) for item in config]
+    elif isinstance(config, str):
+        match = placeholder_pattern.match(config)
+        if match:
+            secret_path = match.group(1)
+            secret_value = _get_secret(client, secret_path)
+            if secret_value:
+                return secret_value
+            else:
+                print(f"Warning: Could not resolve secret at {secret_path}")
+        return config
+    else:
+        return config
+
+
+def _get_secret(client: hvac.Client, path: str) -> Optional[str]:
+    """
+    Get a secret from Vault KV engine.
+
+    Args:
+        client: Authenticated Vault client
+        path: Secret path (e.g., "kv/data/prod/commons/kafka_username")
+
+    Returns:
+        Secret value or None if not found
+    """
+    try:
+        # Parse path to extract mount point and secret path
+        # Expected format: kv/data/prod/commons/kafka_username
+        parts = path.split('/')
+        if len(parts) < 4:
+            return None
+
+        mount_point = parts[0]  # "kv"
+        # Skip "data" in path for v2 KV engine
+        secret_path = '/'.join(parts[2:-1])  # "prod/commons"
+        key = parts[-1]  # "kafka_username"
+
+        response = client.secrets.kv.v2.read_secret_version(
+            path=secret_path,
+            mount_point=mount_point
+        )
+
+        if response and 'data' in response and 'data' in response['data']:
+            return response['data']['data'].get(key)
+
+        return None
+
+    except Exception as e:
+        print(f"Failed to get secret from path {path}: {e}")
+        return None
+
+
+def load_config(configProp: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Load configuration and resolve Vault secrets based on environment.
+
+    For 'local' environment: uses role_id, secret_id, ns from config
+    For 'kob' environment: uses environment variables
+
+    Args:
+        configProp: Raw configuration dictionary
+
+    Returns:
+        Configuration with resolved secrets
+    """
+    environment = os.getenv('ENVIRONMENT', 'local').lower()
+
+    if environment == 'local':
+        role_id = configProp.get("vault", {}).get("role_id")
+        secret_id = configProp.get("vault", {}).get("secret_id")
+        ns = configProp.get("vault", {}).get("ns")
+    elif environment == 'kob':
+        role_id, secret_id, ns = get_vault_creds()
+    else:
+        raise ValueError(f"Unknown environment: {environment}")
+
+    vault_addr = configProp.get("vault", {}).get("vault_addr", "https://hcvault-nonprod.dell.com")
+
+    if not (role_id and secret_id and ns and vault_addr):
+        raise Exception(
+            f"Missing vault_addr:{vault_addr}, role_id:{role_id}, secret_id:{secret_id}, or ns:{ns} in config")
+
+    updated_config = add_secrets_from_vault(configProp, vault_addr, role_id, secret_id, ns)
+
+    return updated_config
+
+
+# Legacy functions for backward compatibility
 class VaultClient:
-    """Client for interacting with HashiCorp Vault."""
+    """Legacy client - use load_config() instead."""
 
     _instance = None
     VAULT_PLACEHOLDER_PATTERN = re.compile(r'\{\{(kv/data/[^}]+)\}\}')
@@ -25,134 +165,13 @@ class VaultClient:
     def __init__(self):
         if self._initialized:
             return
-
-        self._vault_addr = os.getenv("VAULT_ADDR", "https://vault.dell.com/")
-        self._vault_token = os.getenv("VAULT_TOKEN")
-        self._vault_role = os.getenv("VAULT_ROLE", "vault-auth")
-        self._k8s_token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-
-        self._client: Optional[hvac.Client] = None
-        self._secrets_cache: Dict[str, Any] = {}
         self._initialized = True
 
-    def _get_k8s_token(self) -> Optional[str]:
-        """Read Kubernetes service account token."""
-        try:
-            if os.path.exists(self._k8s_token_path):
-                with open(self._k8s_token_path, 'r') as f:
-                    return f.read().strip()
-        except Exception:
-            pass
-        return None
-
-    def connect(self) -> bool:
-        """
-        Connect to Vault using available authentication method.
-        Priority: Token auth > Kubernetes auth
-        """
-        try:
-            self._client = hvac.Client(url=self._vault_addr)
-
-            # Try token auth first (for local development)
-            if self._vault_token:
-                self._client.token = self._vault_token
-                if self._client.is_authenticated():
-                    return True
-
-            # Try Kubernetes auth (for KOB deployment)
-            k8s_token = self._get_k8s_token()
-            if k8s_token:
-                self._client.auth.kubernetes.login(
-                    role=self._vault_role,
-                    jwt=k8s_token
-                )
-                if self._client.is_authenticated():
-                    return True
-
-            return False
-
-        except Exception as e:
-            print(f"Failed to connect to Vault: {e}")
-            return False
-
-    @lru_cache(maxsize=100)
-    def get_secret(self, path: str) -> Optional[str]:
-        """
-        Get a secret from Vault KV engine.
-
-        Args:
-            path: Secret path (e.g., "kv/data/prod/commons/kafka_username")
-
-        Returns:
-            Secret value or None if not found
-        """
-        if not self._client or not self._client.is_authenticated():
-            if not self.connect():
-                raise ConnectionError("Unable to authenticate with Vault")
-
-        try:
-            # Parse path to extract mount point and secret path
-            # Expected format: kv/data/prod/commons/kafka_username
-            parts = path.split('/')
-            if len(parts) < 4:
-                return None
-
-            mount_point = parts[0]  # "kv"
-            # Skip "data" in path for v2 KV engine
-            secret_path = '/'.join(parts[2:-1])  # "prod/commons"
-            key = parts[-1]  # "kafka_username"
-
-            response = self._client.secrets.kv.v2.read_secret_version(
-                path=secret_path,
-                mount_point=mount_point
-            )
-
-            if response and 'data' in response and 'data' in response['data']:
-                return response['data']['data'].get(key)
-
-            return None
-
-        except Exception as e:
-            print(f"Failed to get secret from path {path}: {e}")
-            return None
-
     def resolve_placeholders(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Recursively resolve Vault placeholders in configuration.
-
-        Placeholders format: {{kv/data/path/to/secret}}
-
-        Args:
-            config: Configuration dictionary with potential placeholders
-
-        Returns:
-            Configuration with resolved secrets
-        """
-        if isinstance(config, dict):
-            return {k: self.resolve_placeholders(v) for k, v in config.items()}
-        elif isinstance(config, list):
-            return [self.resolve_placeholders(item) for item in config]
-        elif isinstance(config, str):
-            match = self.VAULT_PLACEHOLDER_PATTERN.match(config)
-            if match:
-                secret_path = match.group(1)
-                secret_value = self.get_secret(secret_path)
-                if secret_value:
-                    return secret_value
-                else:
-                    print(f"Warning: Could not resolve secret at {secret_path}")
-            return config
-        else:
-            return config
-
-    def close(self):
-        """Close Vault client connection."""
-        if self._client:
-            self._client.adapter.close()
-            self._client = None
+        """Resolve using the new load_config function."""
+        return load_config(config)
 
 
-# Module-level functions for convenience
 def get_vault_client() -> VaultClient:
     """Get singleton Vault client instance."""
     return VaultClient()
@@ -160,5 +179,4 @@ def get_vault_client() -> VaultClient:
 
 def resolve_config_secrets(config: Dict[str, Any]) -> Dict[str, Any]:
     """Resolve Vault placeholders in configuration."""
-    client = get_vault_client()
-    return client.resolve_placeholders(config)
+    return load_config(config)

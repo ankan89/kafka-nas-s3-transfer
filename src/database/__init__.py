@@ -1,1 +1,1 @@
-# Database module (Redis and SingleStore clients)
+# Database module (SingleStore client for NAS_File_Tracker)

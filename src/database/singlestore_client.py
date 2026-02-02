@@ -1,8 +1,9 @@
 """
 SingleStore client for tracking file transfer status.
-Maintains a log of all processed messages and their status.
+Maintains a log of all processed messages and their status in NAS_File_Tracker table.
 """
 
+import json
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 import pymysql
@@ -15,20 +16,19 @@ from scm_utilities.Constant.technical import Status
 
 class TransferStatus:
     """Transfer status constants."""
-    PENDING = "PENDING"
-    IN_PROGRESS = "IN_PROGRESS"
-    SUCCESS = "SUCCESS"
-    FAILED = "FAILED"
-    SKIPPED = "SKIPPED"
+    CREATED = "Created"
+    PROCESSED = "Processed"
+    FAILED = "Failed"
 
 
 class SingleStoreClient:
     """
     Client for tracking file transfer status in SingleStore database.
+    Uses the existing NAS_File_Tracker table.
     """
 
-    # Table name for transfer logs
-    TABLE_NAME = "file_transfer_log"
+    # Table name for transfer logs - using existing table
+    TABLE_NAME = "NAS_File_Tracker"
 
     def __init__(self):
         self._config = ConfigLoader()
@@ -103,49 +103,42 @@ class SingleStoreClient:
             return self.connect()
 
     def _ensure_table_exists(self):
-        """Create transfer log table if it doesn't exist."""
-        create_table_sql = f"""
-        CREATE TABLE IF NOT EXISTS {self.TABLE_NAME} (
-            id BIGINT AUTO_INCREMENT PRIMARY KEY,
-            message_id VARCHAR(255) NOT NULL,
-            event_type VARCHAR(50),
-            st_bom_type VARCHAR(50),
-            is_costed VARCHAR(20),
-            olp_phase VARCHAR(50),
-            source_path VARCHAR(1024),
-            s3_path VARCHAR(1024),
-            file_name VARCHAR(512),
-            status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-            error_message TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uk_message_id (message_id),
-            KEY idx_status (status),
-            KEY idx_created_at (created_at)
-        )
+        """Verify the NAS_File_Tracker table exists."""
+        check_table_sql = f"""
+        SELECT COUNT(*) as cnt FROM information_schema.tables
+        WHERE table_schema = %s AND table_name = %s
         """
 
         try:
+            database = self._db_config.get("database", "ODM_FILES")
             with self._connection.cursor() as cursor:
-                cursor.execute(create_table_sql)
-            self._logger.log_info(
-                message=f"Ensured table {self.TABLE_NAME} exists",
-                status=Status.Running,
-                source="SingleStore"
-            )
+                cursor.execute(check_table_sql, (database, self.TABLE_NAME))
+                result = cursor.fetchone()
+                if result and result.get('cnt', 0) > 0:
+                    self._logger.log_info(
+                        message=f"Verified table {self.TABLE_NAME} exists",
+                        status=Status.Running,
+                        source="SingleStore"
+                    )
+                else:
+                    self._logger.log_warning(
+                        message=f"Table {self.TABLE_NAME} does not exist in database {database}",
+                        status=Status.Running,
+                        source="SingleStore"
+                    )
         except Exception as e:
             self._logger.log_warning(
-                message=f"Could not create table {self.TABLE_NAME}: {e}",
+                message=f"Could not verify table {self.TABLE_NAME}: {e}",
                 status=Status.Running,
                 source="SingleStore"
             )
 
-    def insert_pending(self, message: Dict[str, Any]) -> bool:
+    def insert_created(self, message: Dict[str, Any]) -> bool:
         """
-        Insert a new pending transfer record.
+        Insert a new record with status 'Created' when Kafka message is received.
 
         Args:
-            message: Kafka message with file metadata
+            message: Kafka message with file metadata (entire message stored in Kafka_Event)
 
         Returns:
             True if insert successful
@@ -158,30 +151,36 @@ class SingleStoreClient:
         try:
             insert_sql = f"""
             INSERT INTO {self.TABLE_NAME}
-            (message_id, event_type, st_bom_type, is_costed, olp_phase,
-             source_path, file_name, status)
+            (MESSAGE_ID, Kafka_Event, EVENT_TYPE, ST_BOM_DOC_PATH, ST_BOM_FILE_NAME,
+             EVENT_TIMESTAMP, Processed_Timestamp, Status)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
-            status = VALUES(status),
-            updated_at = CURRENT_TIMESTAMP
+            Status = VALUES(Status),
+            Processed_Timestamp = VALUES(Processed_Timestamp)
             """
 
-            source_path = f"{message.get('ST_BOM_DOC_PATH', '')}/{message.get('ST_BOM_FILE_NAME', '')}"
+            # Get event timestamp from message or use current time
+            event_timestamp = message.get("EVENT_TIMESTAMP", "")
+            if not event_timestamp:
+                event_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # Store the entire Kafka message as JSON in Kafka_Event column
+            kafka_event_json = json.dumps(message)
 
             with self._connection.cursor() as cursor:
                 cursor.execute(insert_sql, (
                     message_id,
+                    kafka_event_json,
                     message.get("EVENT_TYPE", ""),
-                    message.get("ST_BOM_TYPE", ""),
-                    message.get("IS_COSTED", ""),
-                    message.get("OLP_PHASE", ""),
-                    source_path,
+                    message.get("ST_BOM_DOC_PATH", ""),
                     message.get("ST_BOM_FILE_NAME", ""),
-                    TransferStatus.PENDING
+                    event_timestamp,
+                    None,  # Processed_Timestamp is null initially
+                    TransferStatus.CREATED
                 ))
 
             self._logger.log_info(
-                message=f"Inserted PENDING record for message: {message_id}",
+                message=f"Inserted record with status 'Created' for message: {message_id}",
                 status=Status.Running,
                 correlation_id=message_id,
                 source="SingleStore"
@@ -190,24 +189,19 @@ class SingleStoreClient:
 
         except Exception as e:
             self._logger.log_error(
-                message=f"Failed to insert pending record: {e}",
+                message=f"Failed to insert record: {e}",
                 status=Status.Failed,
                 correlation_id=message_id,
                 source="SingleStore"
             )
             return False
 
-    def update_in_progress(self, message_id: str) -> bool:
-        """Update record status to IN_PROGRESS."""
-        return self._update_status(message_id, TransferStatus.IN_PROGRESS)
-
-    def update_success(self, message_id: str, s3_path: str) -> bool:
+    def update_processed(self, message_id: str) -> bool:
         """
-        Update record status to SUCCESS with S3 path.
+        Update record status to 'Processed' with processed timestamp.
 
         Args:
             message_id: The MESSAGE_ID
-            s3_path: The S3 path where file was uploaded
 
         Returns:
             True if update successful
@@ -218,19 +212,21 @@ class SingleStoreClient:
         try:
             update_sql = f"""
             UPDATE {self.TABLE_NAME}
-            SET status = %s, s3_path = %s, error_message = NULL
-            WHERE message_id = %s
+            SET Status = %s, Processed_Timestamp = %s
+            WHERE MESSAGE_ID = %s
             """
+
+            processed_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             with self._connection.cursor() as cursor:
                 cursor.execute(update_sql, (
-                    TransferStatus.SUCCESS,
-                    s3_path,
+                    TransferStatus.PROCESSED,
+                    processed_timestamp,
                     message_id
                 ))
 
             self._logger.log_info(
-                message=f"Updated record to SUCCESS for message: {message_id}",
+                message=f"Updated record to 'Processed' for message: {message_id}",
                 status=Status.Completed,
                 correlation_id=message_id,
                 source="SingleStore"
@@ -239,20 +235,20 @@ class SingleStoreClient:
 
         except Exception as e:
             self._logger.log_error(
-                message=f"Failed to update success status: {e}",
+                message=f"Failed to update processed status: {e}",
                 status=Status.Failed,
                 correlation_id=message_id,
                 source="SingleStore"
             )
             return False
 
-    def update_failed(self, message_id: str, error_message: str) -> bool:
+    def update_failed(self, message_id: str, error_message: str = None) -> bool:
         """
-        Update record status to FAILED with error message.
+        Update record status to 'Failed' with processed timestamp.
 
         Args:
             message_id: The MESSAGE_ID
-            error_message: Error description
+            error_message: Optional error description (logged but not stored in table)
 
         Returns:
             True if update successful
@@ -263,19 +259,21 @@ class SingleStoreClient:
         try:
             update_sql = f"""
             UPDATE {self.TABLE_NAME}
-            SET status = %s, error_message = %s
-            WHERE message_id = %s
+            SET Status = %s, Processed_Timestamp = %s
+            WHERE MESSAGE_ID = %s
             """
+
+            processed_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
             with self._connection.cursor() as cursor:
                 cursor.execute(update_sql, (
                     TransferStatus.FAILED,
-                    error_message[:4000] if error_message else None,  # Truncate long errors
+                    processed_timestamp,
                     message_id
                 ))
 
             self._logger.log_info(
-                message=f"Updated record to FAILED for message: {message_id}",
+                message=f"Updated record to 'Failed' for message: {message_id}. Error: {error_message}",
                 status=Status.Failed,
                 correlation_id=message_id,
                 source="SingleStore"
@@ -291,44 +289,22 @@ class SingleStoreClient:
             )
             return False
 
-    def update_skipped(self, message_id: str, reason: str) -> bool:
-        """Update record status to SKIPPED."""
-        if not self._ensure_connection():
-            return False
-
-        try:
-            update_sql = f"""
-            UPDATE {self.TABLE_NAME}
-            SET status = %s, error_message = %s
-            WHERE message_id = %s
-            """
-
-            with self._connection.cursor() as cursor:
-                cursor.execute(update_sql, (
-                    TransferStatus.SKIPPED,
-                    reason,
-                    message_id
-                ))
-
-            return True
-
-        except Exception:
-            return False
-
     def _update_status(self, message_id: str, status: str) -> bool:
-        """Generic status update."""
+        """Generic status update with processed timestamp."""
         if not self._ensure_connection():
             return False
 
         try:
             update_sql = f"""
             UPDATE {self.TABLE_NAME}
-            SET status = %s
-            WHERE message_id = %s
+            SET Status = %s, Processed_Timestamp = %s
+            WHERE MESSAGE_ID = %s
             """
 
+            processed_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
             with self._connection.cursor() as cursor:
-                cursor.execute(update_sql, (status, message_id))
+                cursor.execute(update_sql, (status, processed_timestamp, message_id))
 
             return True
 
@@ -351,7 +327,7 @@ class SingleStoreClient:
         try:
             select_sql = f"""
             SELECT * FROM {self.TABLE_NAME}
-            WHERE message_id = %s
+            WHERE MESSAGE_ID = %s
             """
 
             with self._connection.cursor() as cursor:
@@ -369,13 +345,33 @@ class SingleStoreClient:
         try:
             select_sql = f"""
             SELECT * FROM {self.TABLE_NAME}
-            WHERE status = %s
-            ORDER BY created_at DESC
+            WHERE Status = %s
+            ORDER BY EVENT_TIMESTAMP DESC
             LIMIT %s
             """
 
             with self._connection.cursor() as cursor:
                 cursor.execute(select_sql, (TransferStatus.FAILED, limit))
+                return cursor.fetchall()
+
+        except Exception:
+            return []
+
+    def get_created_records(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get records with 'Created' status that need processing."""
+        if not self._ensure_connection():
+            return []
+
+        try:
+            select_sql = f"""
+            SELECT * FROM {self.TABLE_NAME}
+            WHERE Status = %s
+            ORDER BY EVENT_TIMESTAMP ASC
+            LIMIT %s
+            """
+
+            with self._connection.cursor() as cursor:
+                cursor.execute(select_sql, (TransferStatus.CREATED, limit))
                 return cursor.fetchall()
 
         except Exception:

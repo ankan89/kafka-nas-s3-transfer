@@ -8,7 +8,6 @@ from typing import Dict, Any
 from src.logging_config import CdpLogger
 from src.storage.nas_client import NasClient
 from src.storage.s3_client import S3Client
-from src.database.redis_client import RedisClient
 from src.database.singlestore_client import SingleStoreClient, TransferStatus
 from scm_utilities.Constant.technical import Status
 
@@ -23,7 +22,6 @@ class FileTransferService:
         self._logger = CdpLogger.get_instance()
         self._nas = NasClient()
         self._s3 = S3Client()
-        self._redis = RedisClient()
         self._db = SingleStoreClient()
 
         # Initialize connections
@@ -37,17 +35,7 @@ class FileTransferService:
             source="FileTransfer"
         )
 
-        # Redis is optional - continue if unavailable
-        try:
-            self._redis.connect()
-        except Exception as e:
-            self._logger.log_warning(
-                message=f"Redis connection failed, continuing without deduplication: {e}",
-                status=Status.Running,
-                source="FileTransfer"
-            )
-
-        # SingleStore is optional - continue if unavailable
+        # SingleStore connection for tracking
         try:
             self._db.connect()
         except Exception as e:
@@ -60,16 +48,20 @@ class FileTransferService:
         # S3 connection will be established on first use
         # NAS connection will be established on first file access
 
-    def process_message(self, message: Dict[str, Any]) -> bool:
+    def process_message(self, message: Dict[str, Any], kafka_topic: str = None) -> bool:
         """
         Process a Kafka message and transfer file from NAS to S3.
 
-        This method implements transactional behavior:
-        - Returns True only if transfer is successful (Kafka should commit)
-        - Returns False if transfer fails (Kafka should NOT commit)
+        Workflow:
+        1. Read Kafka message and extract data
+        2. Insert record into NAS_File_Tracker with status 'Created' (stores entire Kafka msg)
+        3. Search for file in NAS folder
+        4. Copy file to S3
+        5. Update status to 'Processed' or 'Failed'
 
         Args:
             message: Kafka message containing file metadata
+            kafka_topic: The Kafka topic name (for logging only)
 
         Returns:
             True if processing successful (commit offset)
@@ -78,25 +70,14 @@ class FileTransferService:
         message_id = message.get("MESSAGE_ID", "unknown")
 
         self._logger.log_info(
-            message=f"Processing message: {message_id}",
+            message=f"Processing message: {message_id} from topic: {kafka_topic}",
             status=Status.Running,
             correlation_id=message_id,
             source="FileTransfer"
         )
 
         try:
-            # Step 1: Check for duplicate (Redis)
-            if self._redis.is_processed(message_id):
-                self._logger.log_info(
-                    message=f"Duplicate message skipped: {message_id}",
-                    status=Status.Completed,
-                    correlation_id=message_id,
-                    source="FileTransfer"
-                )
-                # Duplicate - commit offset to skip
-                return True
-
-            # Step 2: Validate message
+            # Step 1: Validate message
             if not self._validate_message(message):
                 self._logger.log_error(
                     message=f"Invalid message format: {message_id}",
@@ -107,22 +88,28 @@ class FileTransferService:
                 # Invalid message - commit to skip (no point retrying)
                 return True
 
-            # Step 3: Insert PENDING record to SingleStore
-            self._db.insert_pending(message)
-            self._db.update_in_progress(message_id)
+            # Step 2: Insert record with status 'Created' into NAS_File_Tracker
+            # The entire Kafka message is stored in Kafka_Event column
+            if not self._db.insert_created(message):
+                self._logger.log_warning(
+                    message=f"Failed to insert record for message: {message_id}, continuing with transfer",
+                    status=Status.Running,
+                    correlation_id=message_id,
+                    source="FileTransfer"
+                )
 
-            # Step 4: Build file paths
+            # Step 3: Build file paths
             nas_path = self._build_nas_path(message)
             s3_path = self._s3.build_s3_path(message)
 
             self._logger.log_info(
-                message=f"Transferring file: {nas_path} -> {s3_path}",
+                message=f"Searching for file in NAS: {nas_path}",
                 status=Status.Running,
                 correlation_id=message_id,
                 source="FileTransfer"
             )
 
-            # Step 5: Download from NAS
+            # Step 4: Download from NAS (search and retrieve file)
             try:
                 file_data = self._nas.download_file(nas_path)
             except FileNotFoundError:
@@ -136,14 +123,18 @@ class FileTransferService:
                 # File doesn't exist - commit to skip (no point retrying)
                 return True
 
-            # Step 6: Upload to S3
+            self._logger.log_info(
+                message=f"Copying file to S3: {s3_path}",
+                status=Status.Running,
+                correlation_id=message_id,
+                source="FileTransfer"
+            )
+
+            # Step 5: Upload to S3
             s3_uri = self._s3.upload_file(file_data, s3_path)
 
-            # Step 7: Mark success in SingleStore
-            self._db.update_success(message_id, s3_uri)
-
-            # Step 8: Mark processed in Redis
-            self._redis.mark_processed(message_id)
+            # Step 6: Update status to 'Processed' in NAS_File_Tracker
+            self._db.update_processed(message_id)
 
             self._logger.log_info(
                 message=f"Transfer complete: {message_id} -> {s3_uri}",
@@ -152,7 +143,7 @@ class FileTransferService:
                 source="FileTransfer"
             )
 
-            # Success - commit offset
+            # Success - commit offset and wait for next message
             return True
 
         except Exception as e:
@@ -163,7 +154,7 @@ class FileTransferService:
                 source="FileTransfer"
             )
 
-            # Update database with failure
+            # Update status to 'Failed' in NAS_File_Tracker
             self._db.update_failed(message_id, str(e))
 
             # Failure - DO NOT commit offset (will retry)
@@ -229,13 +220,6 @@ class FileTransferService:
             "components": {}
         }
 
-        # Check Redis
-        try:
-            redis_ok = self._redis._get_active_client() is not None
-            health["components"]["redis"] = "healthy" if redis_ok else "unhealthy"
-        except Exception:
-            health["components"]["redis"] = "unhealthy"
-
         # Check SingleStore
         try:
             db_ok = self._db._ensure_connection()
@@ -265,11 +249,6 @@ class FileTransferService:
 
         try:
             self._nas.close()
-        except Exception:
-            pass
-
-        try:
-            self._redis.close()
         except Exception:
             pass
 
