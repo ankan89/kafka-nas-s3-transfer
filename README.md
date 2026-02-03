@@ -1,0 +1,1 @@
+# nas-to-ecs-watcher - To Move files from NAS to ECS by reading the kafka messages which contain the NAS file location

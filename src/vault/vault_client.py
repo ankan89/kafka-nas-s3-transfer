@@ -36,7 +36,7 @@ def add_secrets_from_vault(config: Dict[str, Any], vault_addr: str,
     Returns:
         Configuration with resolved secrets
     """
-    client = hvac.Client(url=vault_addr, namespace=ns)
+    client = hvac.Client(url=vault_addr, namespace=ns, verify="./src/root.crt")
 
     # Authenticate using AppRole
     client.auth.approle.login(role_id=role_id, secret_id=secret_id)
@@ -94,7 +94,7 @@ def _get_secret(client: hvac.Client, path: str) -> Optional[str]:
         if len(parts) < 4:
             return None
 
-        mount_point = parts[0]  # "kv"
+        mount_point = f"secret/{parts[0]}"  # "kv"
         # Skip "data" in path for v2 KV engine
         secret_path = '/'.join(parts[2:-1])  # "prod/commons"
         key = parts[-1]  # "kafka_username"

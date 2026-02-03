@@ -7,8 +7,8 @@ import json
 import signal
 import sys
 from typing import Callable, Optional, Dict, Any, List
-from kafka import KafkaConsumer
-from kafka.errors import KafkaError
+from confluent_kafka import Consumer
+from confluent_kafka import KafkaError
 
 from src.config_loader import ConfigLoader
 from src.logging_config import CdpLogger
@@ -24,7 +24,7 @@ class KafkaMessageConsumer:
     def __init__(self):
         self._config = ConfigLoader()
         self._logger = CdpLogger.get_instance()
-        self._consumer: Optional[KafkaConsumer] = None
+        self._consumer: Optional[Consumer] = None
         self._running = False
 
         # Get Kafka configuration (Vault placeholders already resolved)
@@ -64,7 +64,7 @@ class KafkaMessageConsumer:
                 )
                 return False
 
-            self._consumer = KafkaConsumer(
+            self._consumer = Consumer(
                 bootstrap_servers=bootstrap_servers.split(","),
                 security_protocol="SASL_SSL",
                 sasl_mechanism="PLAIN",

@@ -1,58 +1,46 @@
-# Kafka NAS to S3 Transfer Service
-# Multi-stage build for smaller final image
+FROM harbor.dell.com/devops-images/debian-12/python-3.12:latest as base
 
-FROM python:3.11-slim as builder
+FROM base as build
+
+USER root
 
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    libkrb5-dev \
-    libffi-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements first for caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN apt-get -y update && apt-get -y upgrade && \
+    apt-get install -y \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
+    && pip install --no-cache-dir -r requirements.txt \
+    && rm -f /Python-3.*/Lib/test/*.pem \
+    && rm -f /usr/bin/vault
 
-# Final stage
-FROM python:3.11-slim
+# Keeps Python from generating .pyc files in the container
+ENV PYTHONDONTWRITEBYTECODE=1
 
-WORKDIR /app
-
-# Install runtime dependencies only
-RUN apt-get update && apt-get install -y \
-    libkrb5-3 \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash appuser
-
-# Copy installed packages from builder
-COPY --from=builder /root/.local /home/appuser/.local
-
-# Copy application code
-COPY src/ ./src/
-COPY config/ ./config/
-
-# Set ownership
-RUN chown -R appuser:appuser /app
-
-# Switch to non-root user
-USER appuser
-
-# Add local packages to path
-ENV PATH=/home/appuser/.local/bin:$PATH
-ENV PYTHONPATH=/app
+# Turns off buffering for easier container logging
 ENV PYTHONUNBUFFERED=1
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
+COPY src /app/src
+COPY main.py /app
 
-# Expose health check port
+# Create necessary directories and set permissions
+RUN mkdir -p /data/pvc /app/OutputDirectory \
+    && chmod 755 /data/pvc \
+    && chmod 777 /app/OutputDirectory \
+    && chown -R 1001 /data/pvc
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod 755 /entrypoint.sh
+
+# Create non-root user and set permissions
+RUN adduser -u 5678 --disabled-password --gecos "" appuser \
+    && chown -R appuser /app
+
+USER appuser
+
+ENV PYTHONPATH=/app
+
 EXPOSE 8080
 
-# Run application
-CMD ["python", "src/main.py"]
+ENTRYPOINT ["/entrypoint.sh"]

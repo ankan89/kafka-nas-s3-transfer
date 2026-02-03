@@ -3,15 +3,14 @@
 # Internal Dell library (install from internal PyPI)
 --index-url https://artifacts.dell.com/artifactory/api/pypi/python/simple  
 
-# urllib3==2.6.2 
+urllib3==2.6.2 
 
-https://artifacts.dell.com:443/artifactory/scmdpl-1007201-pypi-prd-local/scm-utilities/0.4.0/scm_utilities-0.4.0-py3-none-any.whl
+https://artifacts.dell.com:443/artifactory/scmdpl-1007201-pypi-dev-local/scm-utilities/0.1.0/scm_utilities-0.1.0-py3-none-any.whl
 
 # Kafka
-# kafka-python==2.0.2
-confluent-kafka==2.3.0
+kafka-python==2.0.2
+# Alternative: confluent-kafka==2.3.0
 
-hvac
 # Storage - S3
 boto3==1.34.0
 botocore==1.34.0

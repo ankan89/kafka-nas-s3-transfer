@@ -49,10 +49,10 @@ class CdpLogger:
         try:
             config_props = ConfigLoader()
             logging_url = config_props.get("logging", {}).get("url", "")
-            dp_name = config_props.get("logging", {}).get("dp_name", "DP03_Production")
-            pod_name = config_props.get("logging", {}).get("pod_name", "DP03_Production_Nas_Watcher")
-            domain = config_props.get("logging", {}).get("domain", "MAKE")
-            sub_domain = config_props.get("logging", {}).get("sub_domain", "MAKE")
+            dp_name = config_props.get("logging", {}).get("dp_name", "DP01_Eng&Design")
+            pod_name = config_props.get("logging", {}).get("pod_name", "DP03_DP01_Eng&Design_Watcher")
+            domain = config_props.get("logging", {}).get("domain", "ENGINEERINGANDDESIGN")
+            sub_domain = config_props.get("logging", {}).get("sub_domain", "SDS")
             app_id = config_props.get("logging", {}).get("app_id", "1007201")
             platform = config_props.get("logging", {}).get("platform", "KOB")
 
