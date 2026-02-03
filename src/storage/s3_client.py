@@ -215,6 +215,94 @@ class S3Client:
             )
             raise
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type((ClientError, ConnectionError))
+    )
+    def upload_from_file(self, local_file_path: str, s3_path: str, content_type: str = None) -> str:
+        """
+        Upload file from local path to S3 (streaming, memory-efficient).
+
+        Args:
+            local_file_path: Path to local file
+            s3_path: S3 object key (path)
+            content_type: Optional content type
+
+        Returns:
+            Full S3 URI of uploaded file
+
+        Raises:
+            ClientError: If upload fails
+            FileNotFoundError: If local file doesn't exist
+        """
+        if not self._client:
+            if not self.connect():
+                raise ConnectionError("Failed to connect to S3")
+
+        bucket_name = self._s3_config.get("bucket_name", "SDS")
+
+        try:
+            if not os.path.isfile(local_file_path):
+                raise FileNotFoundError(f"Local file not found: {local_file_path}")
+
+            file_size = os.path.getsize(local_file_path)
+            self._logger.log_info(
+                message=f"Uploading {file_size} bytes to S3: s3://{bucket_name}/{s3_path}",
+                status=Status.Running,
+                source="S3"
+            )
+
+            # Determine content type
+            if content_type is None:
+                if s3_path.lower().endswith('.json'):
+                    content_type = 'application/json'
+                elif s3_path.lower().endswith('.xml'):
+                    content_type = 'application/xml'
+                elif s3_path.lower().endswith('.csv'):
+                    content_type = 'text/csv'
+                else:
+                    content_type = 'application/octet-stream'
+
+            # Upload file from path (streaming upload - doesn't load entire file into memory)
+            extra_args = {
+                'ContentType': content_type
+            }
+
+            self._client.upload_file(
+                Filename=local_file_path,
+                Bucket=bucket_name,
+                Key=s3_path,
+                ExtraArgs=extra_args
+            )
+
+            s3_uri = f"s3://{bucket_name}/{s3_path}"
+
+            self._logger.log_info(
+                message=f"Successfully uploaded to: {s3_uri}",
+                status=Status.Completed,
+                source="S3"
+            )
+
+            return s3_uri
+
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            self._logger.log_error(
+                message=f"S3 upload failed ({error_code}): {e}",
+                status=Status.Failed,
+                source="S3"
+            )
+            raise
+
+        except Exception as e:
+            self._logger.log_error(
+                message=f"Error uploading to S3: {e}",
+                status=Status.Failed,
+                source="S3"
+            )
+            raise
+
     def file_exists(self, s3_path: str) -> bool:
         """
         Check if file exists in S3.

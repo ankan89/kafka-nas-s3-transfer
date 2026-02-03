@@ -3,6 +3,9 @@ File Transfer Service - Main orchestration for NAS to S3 transfers.
 Coordinates all components for transactional file transfer.
 """
 
+import os
+import tempfile
+import shutil
 from typing import Dict, Any
 
 from src.logging_config import CdpLogger
@@ -76,6 +79,9 @@ class FileTransferService:
             source="FileTransfer"
         )
 
+        # Initialize temp_dir for cleanup in exception handler
+        temp_dir = None
+
         try:
             # Step 1: Validate message
             if not self._validate_message(message):
@@ -109,9 +115,11 @@ class FileTransferService:
                 source="FileTransfer"
             )
 
-            # Step 4: Download from NAS (search and retrieve file)
+            # Step 4: Copy file from NAS to local temp directory (without reading content into memory)
+            local_file_path = None
             try:
-                file_data = self._nas.download_file(nas_path)
+                temp_dir = tempfile.mkdtemp(prefix="nas_transfer_")
+                local_file_path = self._nas.copy_file_to_local(nas_path, temp_dir)
             except FileNotFoundError:
                 self._logger.log_error(
                     message=f"File not found on NAS: {nas_path}",
@@ -120,18 +128,32 @@ class FileTransferService:
                     source="FileTransfer"
                 )
                 self._db.update_failed(message_id, f"File not found: {nas_path}")
+                # Clean up temp dir if created
+                if temp_dir and os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
                 # File doesn't exist - commit to skip (no point retrying)
                 return True
 
             self._logger.log_info(
-                message=f"Copying file to S3: {s3_path}",
+                message=f"Uploading file to S3: {s3_path}",
                 status=Status.Running,
                 correlation_id=message_id,
                 source="FileTransfer"
             )
 
-            # Step 5: Upload to S3
-            s3_uri = self._s3.upload_file(file_data, s3_path)
+            # Step 5: Upload to S3 from local file (streaming upload)
+            try:
+                s3_uri = self._s3.upload_from_file(local_file_path, s3_path)
+            finally:
+                # Clean up local temp file
+                if temp_dir and os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    self._logger.log_info(
+                        message=f"Cleaned up temp directory: {temp_dir}",
+                        status=Status.Running,
+                        correlation_id=message_id,
+                        source="FileTransfer"
+                    )
 
             # Step 6: Update status to 'Processed' in NAS_File_Tracker
             self._db.update_processed(message_id)
@@ -153,6 +175,10 @@ class FileTransferService:
                 correlation_id=message_id,
                 source="FileTransfer"
             )
+
+            # Clean up temp directory if it exists
+            if temp_dir and os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
 
             # Update status to 'Failed' in NAS_File_Tracker
             self._db.update_failed(message_id, str(e))

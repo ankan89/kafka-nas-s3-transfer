@@ -4,6 +4,8 @@ Reads files from a mounted PVC instead of using SMB protocol.
 """
 
 import os
+import shutil
+import tempfile
 from typing import Tuple
 
 from src.config_loader import ConfigLoader
@@ -153,6 +155,72 @@ class NasClient:
         except Exception as e:
             self._logger.log_error(
                 message=f"Error reading file {nas_path}: {e}",
+                status=Status.Failed,
+                source="NAS"
+            )
+            raise
+
+    def copy_file_to_local(self, nas_path: str, local_dir: str = None) -> str:
+        """
+        Copy file from NAS (PVC mount) to local directory without reading content into memory.
+
+        Args:
+            nas_path: Full NAS path to the file
+            local_dir: Local directory to copy to (uses temp dir if not provided)
+
+        Returns:
+            Local file path where file was copied
+
+        Raises:
+            FileNotFoundError: If source file doesn't exist
+            IOError: If copy fails
+        """
+        try:
+            pvc_path = self._transform_nas_to_pvc_path(nas_path)
+
+            self._logger.log_info(
+                message=f"Copying file from PVC to local: {pvc_path}",
+                status=Status.Running,
+                source="NAS"
+            )
+
+            if not os.path.isfile(pvc_path):
+                self._logger.log_error(
+                    message=f"File not found: {pvc_path}",
+                    status=Status.Failed,
+                    source="NAS"
+                )
+                raise FileNotFoundError(f"File not found: {pvc_path}")
+
+            # Use provided directory or create a temp directory
+            if local_dir is None:
+                local_dir = tempfile.mkdtemp(prefix="nas_transfer_")
+
+            # Ensure local directory exists
+            os.makedirs(local_dir, exist_ok=True)
+
+            # Get filename and create local path
+            filename = os.path.basename(pvc_path)
+            local_path = os.path.join(local_dir, filename)
+
+            # Copy file without reading into memory (uses OS-level copy)
+            shutil.copy2(pvc_path, local_path)
+
+            file_size = os.path.getsize(local_path)
+            self._logger.log_info(
+                message=f"Copied {file_size} bytes to {local_path}",
+                status=Status.Completed,
+                source="NAS"
+            )
+
+            return local_path
+
+        except FileNotFoundError:
+            raise
+
+        except Exception as e:
+            self._logger.log_error(
+                message=f"Error copying file {nas_path}: {e}",
                 status=Status.Failed,
                 source="NAS"
             )
