@@ -30,7 +30,7 @@ class NasClient:
 
         # Get NAS configuration from watchdog config
         watchdog_config = self._config.get("watchdog", [{}])[0]
-        self._nas_path = watchdog_config.get("nas_path", "")
+        self._nas_path = watchdog_config.get("nas_path")
 
         self._connection: Optional[Connection] = None
         self._session: Optional[Session] = None
@@ -94,7 +94,7 @@ class NasClient:
             if "\\" in username:
                 domain, username = username.split("\\", 1)
             else:
-                domain = credentials.get("domain", "")
+                domain = credentials.get("domain")
 
             self._session = Session(
                 connection=self._connection,

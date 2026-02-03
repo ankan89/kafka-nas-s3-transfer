@@ -11,9 +11,9 @@ class NASCredentials:
     """NAS credentials configuration for SMB/CIFS access."""
 
     def __init__(self):
-        self._username = os.getenv("NAS_USERNAME", "")
-        self._password = os.getenv("NAS_PASSWORD", "")
-        self._domain = os.getenv("NAS_DOMAIN", "AMERICAS")
+        self._username = "svc_npplmdp"
+        self._password = "Q0H9V4a31i*_5jCK+ouMnzXB"
+        self._domain = "AMERICAS"
 
     @property
     def username(self) -> str:

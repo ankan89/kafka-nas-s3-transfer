@@ -64,22 +64,21 @@ class KafkaMessageConsumer:
                 )
                 return False
 
-            self._consumer = Consumer(
-                bootstrap_servers=bootstrap_servers.split(","),
-                security_protocol="SASL_SSL",
-                sasl_mechanism="PLAIN",
-                sasl_plain_username=username,
-                sasl_plain_password=password,
-                group_id=self._consumer_group,
-                enable_auto_commit=False,  # CRITICAL: Manual commit only
-                auto_offset_reset="earliest",
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-                key_deserializer=lambda m: m.decode('utf-8') if m else None,
-                max_poll_records=10,
-                max_poll_interval_ms=300000,  # 5 minutes
-                session_timeout_ms=45000,
-                heartbeat_interval_ms=15000,
-            )
+            kafka_config = {
+                'group.id': self._consumer_group,
+                'bootstrap.servers': bootstrap_servers,
+                'security.protocol': 'SASL_SSL',
+                'sasl.mechanism': 'PLAIN',
+                'sasl.username': username,
+                'sasl.password': password,
+                'auto.offset.reset': 'earliest',
+                'enable.auto.commit': False,  # CRITICAL: Manual commit only
+                'session.timeout.ms': 45000,
+                'heartbeat.interval.ms': 15000,
+                'max.poll.interval.ms': 300000,  # 5 minutes
+            }
+
+            self._consumer = Consumer(kafka_config)
 
             self._logger.log_info(
                 message=f"Connected to Kafka: {bootstrap_servers}",
@@ -163,65 +162,67 @@ class KafkaMessageConsumer:
         while self._running:
             try:
                 # Poll for messages
-                message_batch = self._consumer.poll(timeout_ms=poll_timeout_ms)
+                msg = self._consumer.poll()
 
-                for topic_partition, messages in message_batch.items():
-                    kafka_topic = topic_partition.topic  # Get the topic name
+                # for topic_partition, messages in message_batch.items():
+                kafka_topic = msg.topic()  # Get the topic name
+                data = json.loads(msg.value().decode('utf-8'))
 
-                    for message in messages:
-                        message_id = None
-                        try:
-                            # Extract message ID for logging
-                            message_value = message.value
-                            message_id = message_value.get("MESSAGE_ID", "unknown")
+                # for message in messages:
+                import uuid
 
-                            self._logger.log_info(
-                                message=f"Received Kafka message: {message_id} from topic: {kafka_topic}",
-                                status=Status.Running,
-                                correlation_id=message_id,
-                                source="Kafka"
-                            )
+                message_id = str(uuid.uuid4())
+                try:
+                    # Extract message ID for logging
+                    # message_id = message_value.get("MESSAGE_ID", "unknown")
 
-                            # Process the message with topic name
-                            success = handler(message_value, kafka_topic)
+                    self._logger.log_info(
+                        message=f"Received Kafka message from topic: {kafka_topic}",
+                        status=Status.Running,
+                        correlation_id=message_id,
+                        source="Kafka"
+                    )
 
-                            if success:
-                                # Commit offset only on success
-                                self._consumer.commit()
-                                self._logger.log_info(
-                                    message=f"Committed offset for message: {message_id}",
-                                    status=Status.Completed,
-                                    correlation_id=message_id,
-                                    source="Kafka"
-                                )
-                            else:
-                                # Do NOT commit - message will be reprocessed
-                                self._logger.log_warning(
-                                    message=f"Handler returned failure for message: {message_id}, will retry",
-                                    status=Status.Running,
-                                    correlation_id=message_id,
-                                    source="Kafka"
-                                )
+                    # Process the message with topic name
+                    success = handler(data, kafka_topic)
 
-                        except json.JSONDecodeError as e:
-                            # Invalid message format - commit to skip
-                            self._logger.log_error(
-                                message=f"Invalid JSON message: {e}",
-                                status=Status.Failed,
-                                correlation_id=message_id,
-                                source="Kafka"
-                            )
-                            self._consumer.commit()
+                    if success:
+                        # Commit offset only on success
+                        self._consumer.commit()
+                        self._logger.log_info(
+                            message=f"Committed offset for message: {message_id}",
+                            status=Status.Completed,
+                            correlation_id=message_id,
+                            source="Kafka"
+                        )
+                    else:
+                        # Do NOT commit - message will be reprocessed
+                        self._logger.log_warning(
+                            message=f"Handler returned failure for message: {message_id}, will retry",
+                            status=Status.Running,
+                            correlation_id=message_id,
+                            source="Kafka"
+                        )
 
-                        except Exception as e:
-                            # Processing error - do NOT commit
-                            self._logger.log_error(
-                                message=f"Error processing message {message_id}: {e}",
-                                status=Status.Failed,
-                                correlation_id=message_id,
-                                source="Kafka"
-                            )
-                            # Don't commit, will retry on next poll
+                except json.JSONDecodeError as e:
+                    # Invalid message format - commit to skip
+                    self._logger.log_error(
+                        message=f"Invalid JSON message: {e}",
+                        status=Status.Failed,
+                        correlation_id=message_id,
+                        source="Kafka"
+                    )
+                    self._consumer.commit()
+
+                except Exception as e:
+                    # Processing error - do NOT commit
+                    self._logger.log_error(
+                        message=f"Error processing message {message_id}: {e}",
+                        status=Status.Failed,
+                        correlation_id=message_id,
+                        source="Kafka"
+                    )
+                    # Don't commit, will retry on next poll
 
             except KafkaError as e:
                 self._logger.log_error(

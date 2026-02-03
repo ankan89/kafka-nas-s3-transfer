@@ -172,9 +172,9 @@ class SingleStoreClient:
                 cursor.execute(insert_sql, (
                     message_id,
                     kafka_event_json,
-                    message.get("EVENT_TYPE", ""),
-                    message.get("ST_BOM_DOC_PATH", ""),
-                    message.get("ST_BOM_FILE_NAME", ""),
+                    message.get("EVENT_TYPE"),
+                    message.get("ST_BOM_DOC_PATH"),
+                    message.get("ST_BOM_FILE_NAME"),
                     event_timestamp,
                     None,  # Processed_Timestamp is null initially
                     TransferStatus.CREATED

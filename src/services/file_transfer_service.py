@@ -67,7 +67,7 @@ class FileTransferService:
             True if processing successful (commit offset)
             False if processing failed (do not commit, will retry)
         """
-        message_id = message.get("MESSAGE_ID", "unknown")
+        message_id = message.get("MESSAGE_ID")
 
         self._logger.log_info(
             message=f"Processing message: {message_id} from topic: {kafka_topic}",

@@ -104,16 +104,16 @@ class S3Client:
         Returns:
             S3 object key (path)
         """
-        folder_name = self._s3_config.get("folder_name", "dp03")
+        folder_name = self._s3_config.get("folder_name")
 
-        event_type = message.get("EVENT_TYPE", "UNKNOWN")
-        st_bom_type = message.get("ST_BOM_TYPE", "UNKNOWN")
-        is_costed = message.get("IS_COSTED", "UNKNOWN")
-        olp_phase = message.get("OLP_PHASE", "UNKNOWN")
-        file_name = message.get("ST_BOM_FILE_NAME", "")
+        event_type = message.get("EVENT_TYPE")
+        st_bom_type = message.get("ST_BOM_TYPE")
+        is_costed = message.get("IS_COSTED")
+        olp_phase = message.get("OLP_PHASE")
+        file_name = message.get("ST_BOM_FILE_NAME")
 
         # Parse timestamp for date folder structure
-        timestamp_str = message.get("EVENT_TIMESTAMP", "")
+        timestamp_str = message.get("EVENT_TIMESTAMP")
         try:
             if timestamp_str:
                 # Expected format: "2025-11-13 HH:MM:SS"
