@@ -97,8 +97,8 @@ def main():
         )
 
         # Determine topics to consume
-        kafka_config = config.get("kafka", {})
-        topic_names = kafka_config.get("topic_names", {})
+        kafka_config = config.get("kafka")
+        topic_names = kafka_config.get("topic_names")
 
         # Get all unique topics
         topics = list(set(topic_names.values()))

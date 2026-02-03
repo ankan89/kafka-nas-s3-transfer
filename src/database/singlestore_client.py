@@ -28,7 +28,7 @@ class SingleStoreClient:
     """
 
     # Table name for transfer logs - using existing table
-    TABLE_NAME = "NAS_File_Tracker"
+    TABLE_NAME = "NAS_FILE_TRACKER"
 
     def __init__(self):
         self._config = ConfigLoader()
@@ -46,10 +46,10 @@ class SingleStoreClient:
             True if connection successful
         """
         try:
-            hostname = self._db_config.get("hostname", "")
-            username = self._db_config.get("username", "")
-            password = self._db_config.get("password", "")
-            database = self._db_config.get("database", "ODM_FILES")
+            hostname = self._db_config.get("hostname")
+            username = self._db_config.get("username")
+            password = self._db_config.get("password")
+            database = self._db_config.get("database")
 
             if not all([hostname, username, password]):
                 self._logger.log_error(
@@ -69,7 +69,8 @@ class SingleStoreClient:
                 autocommit=True,
                 connect_timeout=10,
                 read_timeout=30,
-                write_timeout=30
+                write_timeout=30,
+                ssl={"ca": "./src/root.crt"},
             )
 
             self._logger.log_info(
@@ -110,7 +111,7 @@ class SingleStoreClient:
         """
 
         try:
-            database = self._db_config.get("database", "ODM_FILES")
+            database = self._db_config.get("database")
             with self._connection.cursor() as cursor:
                 cursor.execute(check_table_sql, (database, self.TABLE_NAME))
                 result = cursor.fetchone()
@@ -151,8 +152,8 @@ class SingleStoreClient:
         try:
             insert_sql = f"""
             INSERT INTO {self.TABLE_NAME}
-            (MESSAGE_ID, Kafka_Event, EVENT_TYPE, ST_BOM_DOC_PATH, ST_BOM_FILE_NAME,
-             EVENT_TIMESTAMP, Processed_Timestamp, Status)
+            (MESSAGE_ID, KAFKA_EVENT, EVENT_TYPE, ST_BOM_DOC_PATH, ST_BOM_FILE_NAME,
+             EVENT_TIMESTAMP, PROCESSED_TIMESTAMP, STATUS)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
             Status = VALUES(Status),

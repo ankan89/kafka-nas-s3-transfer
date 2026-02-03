@@ -31,7 +31,7 @@
     "hostname": "scmnlmep1si1201.amer.dell.com",
     "username": "{{kv/data/dev/common/singlestore_user}}",
     "password": "{{kv/data/dev/common/singlestore_password}}",
-    "database": "NAS_File_Tracker"
+    "database": "SCM_CENTRAL"
   },
   "logging": {
     "url": "https://logger-api.scmdp.kob.dell.com/logging-api/v2/centralLogger",
@@ -39,7 +39,7 @@
     "app_id": "1007201",
     "pod_name": "DP01_Engineering&Design_Kafka_NAS_S3",
     "platform": "KOB",
-    "domain": "Engineering&Design",
+    "domain": "MAKE",
     "sub_domain": "SDS"
   },
   "watchdog": [
