@@ -1,39 +1,28 @@
 """
-NAS client for SMB/CIFS file access.
-Uses smbprotocol for connecting to Windows network shares.
+NAS client for PVC-based file access.
+Reads files from a mounted PVC instead of using SMB protocol.
 """
 
-import io
-from typing import Optional, Tuple
-from smbprotocol.connection import Connection
-from smbprotocol.session import Session
-from smbprotocol.tree import TreeConnect
-from smbprotocol.open import Open, CreateDisposition, FilePipePrinterAccessMask, ImpersonationLevel
-from smbprotocol.file_info import FileAttributes
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import os
+from typing import Tuple
 
 from src.config_loader import ConfigLoader
-from src.secrets import get_nas_credentials
 from src.logging_config import CdpLogger
 from scm_utilities.Constant.technical import Status
 
 
 class NasClient:
     """
-    Client for accessing files on NAS via SMB/CIFS protocol.
+    Client for accessing files on NAS via mounted PVC.
+    Replaces SMB/CIFS protocol with direct file system access.
     """
+
+    DEFAULT_PVC_MOUNT_PATH = "/data/pvc"
 
     def __init__(self):
         self._config = ConfigLoader()
         self._logger = CdpLogger.get_instance()
-        self._nas_credentials = get_nas_credentials()
-
-        # Get NAS configuration from watchdog config
-        watchdog_config = self._config.get("watchdog", [{}])[0]
-        self._nas_path = watchdog_config.get("nas_path")
-
-        self._connection: Optional[Connection] = None
-        self._session: Optional[Session] = None
+        self._pvc_mount_path = os.environ.get("PVC_MOUNT_PATH", self.DEFAULT_PVC_MOUNT_PATH)
 
     def _parse_nas_path(self, full_path: str) -> Tuple[str, str, str]:
         """
@@ -60,73 +49,65 @@ class NasClient:
 
         return server, share, file_path
 
-    def connect(self, server: str) -> bool:
+    def _transform_nas_to_pvc_path(self, nas_path: str) -> str:
         """
-        Establish connection to NAS server.
+        Transform NAS path to PVC mount path.
+
+        NAS Path:  \\\\server\\share\\Outbound_Data\\file.json
+        PVC Path:  /data/pvc/Outbound_Data/file.json
 
         Args:
-            server: NAS server hostname or IP
+            nas_path: Full NAS path
 
         Returns:
-            True if connection successful
+            Corresponding PVC file path
+        """
+        # Parse to get the relative path (after server and share)
+        _, _, relative_path = self._parse_nas_path(nas_path)
+
+        # Convert Windows separators to Unix
+        relative_path = relative_path.replace("\\", "/")
+
+        # Combine with PVC mount path
+        return os.path.join(self._pvc_mount_path, relative_path)
+
+    def connect(self, server: str = None) -> bool:
+        """
+        Verify PVC mount exists.
+
+        Args:
+            server: Ignored (kept for backward compatibility)
+
+        Returns:
+            True if PVC mount directory exists
         """
         try:
-            credentials = self._nas_credentials.get_credentials()
-
-            if not self._nas_credentials.validate():
+            if os.path.isdir(self._pvc_mount_path):
+                self._logger.log_info(
+                    message=f"PVC mount verified at: {self._pvc_mount_path}",
+                    status=Status.Running,
+                    source="NAS"
+                )
+                return True
+            else:
                 self._logger.log_error(
-                    message="NAS credentials not configured",
+                    message=f"PVC mount not found at: {self._pvc_mount_path}",
                     status=Status.Failed,
                     source="NAS"
                 )
                 return False
 
-            # Create connection
-            self._connection = Connection(
-                uuid=None,
-                server_name=server,
-                port=445
-            )
-            self._connection.connect()
-
-            # Create session with authentication
-            username = credentials["username"]
-            if "\\" in username:
-                domain, username = username.split("\\", 1)
-            else:
-                domain = credentials.get("domain")
-
-            self._session = Session(
-                connection=self._connection,
-                username=username,
-                password=credentials["password"],
-                require_encryption=False
-            )
-            self._session.connect()
-
-            self._logger.log_info(
-                message=f"Connected to NAS server: {server}",
-                status=Status.Running,
-                source="NAS"
-            )
-            return True
-
         except Exception as e:
             self._logger.log_error(
-                message=f"Failed to connect to NAS server {server}: {e}",
+                message=f"Failed to verify PVC mount: {e}",
                 status=Status.Failed,
                 source="NAS"
             )
             return False
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type((ConnectionError, TimeoutError))
-    )
     def download_file(self, nas_path: str) -> bytes:
         """
-        Download file from NAS.
+        Read file from PVC mount.
 
         Args:
             nas_path: Full NAS path to the file
@@ -136,69 +117,42 @@ class NasClient:
 
         Raises:
             FileNotFoundError: If file doesn't exist
-            ConnectionError: If connection fails
+            IOError: If file read fails
         """
         try:
-            server, share, file_path = self._parse_nas_path(nas_path)
-
-            # Connect if not already connected
-            if not self._session:
-                if not self.connect(server):
-                    raise ConnectionError(f"Failed to connect to NAS server: {server}")
+            pvc_path = self._transform_nas_to_pvc_path(nas_path)
 
             self._logger.log_info(
-                message=f"Downloading file: {file_path} from share: {share}",
+                message=f"Reading file from PVC: {pvc_path}",
                 status=Status.Running,
                 source="NAS"
             )
 
-            # Connect to share
-            tree = TreeConnect(
-                session=self._session,
-                share_name=f"\\\\{server}\\{share}"
-            )
-            tree.connect()
-
-            try:
-                # Open file for reading
-                file_open = Open(tree=tree, file_name=file_path)
-                file_open.create(
-                    impersonation_level=ImpersonationLevel.Impersonation,
-                    desired_access=FilePipePrinterAccessMask.GENERIC_READ,
-                    file_attributes=FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                    create_disposition=CreateDisposition.FILE_OPEN
+            if not os.path.isfile(pvc_path):
+                self._logger.log_error(
+                    message=f"File not found: {pvc_path}",
+                    status=Status.Failed,
+                    source="NAS"
                 )
+                raise FileNotFoundError(f"File not found: {pvc_path}")
 
-                try:
-                    # Read file contents
-                    file_size = file_open.end_of_file
-                    content = file_open.read(0, file_size)
+            with open(pvc_path, "rb") as f:
+                content = f.read()
 
-                    self._logger.log_info(
-                        message=f"Downloaded {len(content)} bytes from {file_path}",
-                        status=Status.Completed,
-                        source="NAS"
-                    )
-
-                    return content
-
-                finally:
-                    file_open.close()
-
-            finally:
-                tree.disconnect()
-
-        except FileNotFoundError:
-            self._logger.log_error(
-                message=f"File not found: {nas_path}",
-                status=Status.Failed,
+            self._logger.log_info(
+                message=f"Read {len(content)} bytes from {pvc_path}",
+                status=Status.Completed,
                 source="NAS"
             )
+
+            return content
+
+        except FileNotFoundError:
             raise
 
         except Exception as e:
             self._logger.log_error(
-                message=f"Error downloading file {nas_path}: {e}",
+                message=f"Error reading file {nas_path}: {e}",
                 status=Status.Failed,
                 source="NAS"
             )
@@ -206,7 +160,7 @@ class NasClient:
 
     def file_exists(self, nas_path: str) -> bool:
         """
-        Check if file exists on NAS.
+        Check if file exists on PVC mount.
 
         Args:
             nas_path: Full NAS path to check
@@ -215,58 +169,16 @@ class NasClient:
             True if file exists
         """
         try:
-            server, share, file_path = self._parse_nas_path(nas_path)
-
-            if not self._session:
-                if not self.connect(server):
-                    return False
-
-            tree = TreeConnect(
-                session=self._session,
-                share_name=f"\\\\{server}\\{share}"
-            )
-            tree.connect()
-
-            try:
-                file_open = Open(tree=tree, file_name=file_path)
-                file_open.create(
-                    impersonation_level=ImpersonationLevel.Impersonation,
-                    desired_access=FilePipePrinterAccessMask.GENERIC_READ,
-                    file_attributes=FileAttributes.FILE_ATTRIBUTE_NORMAL,
-                    create_disposition=CreateDisposition.FILE_OPEN
-                )
-                file_open.close()
-                return True
-
-            except FileNotFoundError:
-                return False
-
-            finally:
-                tree.disconnect()
+            pvc_path = self._transform_nas_to_pvc_path(nas_path)
+            return os.path.isfile(pvc_path)
 
         except Exception:
             return False
 
     def close(self):
-        """Close NAS connection."""
-        try:
-            if self._session:
-                self._session.disconnect()
-                self._session = None
-
-            if self._connection:
-                self._connection.disconnect()
-                self._connection = None
-
-            self._logger.log_info(
-                message="NAS connection closed",
-                status=Status.Completed,
-                source="NAS"
-            )
-
-        except Exception as e:
-            self._logger.log_error(
-                message=f"Error closing NAS connection: {e}",
-                status=Status.Failed,
-                source="NAS"
-            )
+        """No-op (no connection to close with PVC mount)."""
+        self._logger.log_info(
+            message="NAS client closed (PVC mode)",
+            status=Status.Completed,
+            source="NAS"
+        )

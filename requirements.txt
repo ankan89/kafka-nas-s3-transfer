@@ -16,9 +16,6 @@ hvac
 boto3==1.34.0
 botocore==1.34.0
 
-# Storage - SMB/CIFS
-smbprotocol==1.12.0
-
 # Secrets - HashiCorp Vault
 hvac==2.1.0
 
