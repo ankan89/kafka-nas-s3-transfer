@@ -1,8 +1,20 @@
-import json
 import os
 
 # from src.load_config_properties import get_vault_creds
 from src.util.load_secrets import add_secrets_from_vault
+
+
+def resolve_config_secrets(raw_config: dict) -> dict:
+    """
+    Resolve Vault secret placeholders in configuration.
+
+    Args:
+        raw_config: Configuration dict with potential Vault placeholders
+
+    Returns:
+        Configuration dict with secrets resolved
+    """
+    return load_config(raw_config)
 
 
 def get_vault_creds():
@@ -42,32 +54,3 @@ def load_config(configProp):
     # TODO: added for testing need to remove
     #print(json.dumps(updated_config))
     return updated_config
-
-
-class ConfigLoader:
-    _config = None
-    global config_file_path
-    _instance = None
-    environment = os.getenv('ENVIRONMENT', 'local').lower()
-    if environment == 'local':
-        config_file_path = "./src/config/config.json"
-    elif environment == 'kob':
-        config_file_path = "/scm-config/config.json"
-
-    def __new__(cls, config_path=config_file_path):
-
-        if cls._instance is None:
-            #print(f'config path is, {config_path}')
-            cls._instance = super().__new__(cls)
-            with open(config_path, "r") as file:
-                cls._config = json.load(file)
-            cls._config = load_config(cls._config)
-
-        return cls._instance
-
-    def get(self, key, default=None):
-        return self._config.get(key, default)
-
-    def to_json(self):
-        """Convert config_data to JSON string."""
-        return json.dumps(self._config)
